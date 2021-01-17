@@ -18,7 +18,7 @@ $ git clone https://github.com/mennthor/fitboard
 $ cd fitboard
 $ poetry install
 $ chmod +x start_app.sh
-$ start_app.sh
+$ ./start_app.sh
 ```
 This runs the dashboard in a Flask development server.
 Open the browser, go to `127.0.0.1:5000` and see if this works for you.
