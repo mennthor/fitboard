@@ -23,3 +23,5 @@ $ start_app.sh
 This runs the dashboard in a Flask development server.
 Open the browser, go to `127.0.0.1:5000` and see if this works for you.
 The gif below shows how it looks on my machine, chances are non-zero however it does not look or work for you as in the example.
+
+![Demo GIF](demo/demo.gif)
