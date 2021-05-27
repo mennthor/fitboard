@@ -7,39 +7,42 @@ into the main Flask `init_app` method.
 
 import os
 from glob import glob
-import base64
-from io import BytesIO
 
 import numpy as np
-import matplotlib
-matplotlib.use("agg")  # Non-interactive
-import matplotlib.pyplot as plt
-from mpl_toolkits.axisartist.parasite_axes import HostAxes, ParasiteAxes
 
 import dash
 from dash.dependencies import Input, Output
 import dash_bootstrap_components as dbc
-import dash_core_components as dcc
 import dash_html_components as html
 import plotly.graph_objects as go
 
-from flask_caching import Cache
+from .ui_elements import (
+    get_ui_card_form_group_select_folder,
+    get_ui_card_form_group_select_fit_file,
+    get_ui_graph_main,
+    get_ui_card_form_group_graph_data_selector
+    )
+# from .ui_elements import (
+#     get_ui_card_form_group_select_folder,
+#     get_ui_card_form_group_select_fit_file,
+#     get_ui_graph_main,
+#     get_ui_card_form_group_graph_data_selector
+#     )
 
 import fitdecode
 
 
-# Is it OK to have this globally available? Otherwise I can't use it in
-# callbacks... Use a simple cache for testing, can be excahnged for something
-# threadsave and more fancy I guess (see `flask_caching` package)
-# Do not expire this cache, because it's used as a global data storage
-_CACHE_CONFIG = {"CACHE_TYPE": "simple", "CACHE_DEFAULT_TIMEOUT": 0}
-_CACHE = Cache()
-
-# Read-only globals (is this OK to do?)
-_FIT_FILE_PATHS = {
-    "Auto": os.path.expanduser(
-        os.path.join("~", "Documents", "Zwift", "Activities")),
-}
+# These needs to be replaced with a proper multiuser cache if used for more
+# than one user locally
+_FIT_FILE_PATHS = os.path.expanduser(
+        os.path.join("~", "Documents", "Zwift", "Activities"))
+_FIT_FILE_LIST = []
+_FIT_FILE_LIST_FILTERED = []
+_FIT_FILE_SIZES = []
+_CUR_FIT_FILES = []
+_CUR_VALUES = {}
+_CUR_UNITS = {}
+_EMPTY_FIT_SIZE = 584  # In bytes
 
 
 def init_dashboard(server):
@@ -53,19 +56,15 @@ def init_dashboard(server):
         external_stylesheets=[dbc.themes.MINTY],
     )
 
-    # Init a global cache to avoid loading all datasets into a global variable
-    # at once
-    _CACHE.init_app(server, config=_CACHE_CONFIG)
-
-    # Init default data
-    # Default Ziwft dir, dependent on Win, Linux, OSX
-    data = {}
-    data["FIT_FILE_LOC"] = ["Auto", _FIT_FILE_PATHS["Auto"]]
-    data["FIT_FILES"] = _init_fit_file_db(_FIT_FILE_PATHS["Auto"])
-
-    # Store defaults, the cache stores a single dict with all data
-    _CACHE.set("data", data)
-    _CACHE.set("ynames", ["power"])
+    # Just use a global variable here, only OK for one single user
+    global _FIT_FILE_LIST, _FIT_FILE_SIZES
+    global _FIT_FILE_LIST_FILTERED, _CUR_FIT_FILES
+    _FIT_FILE_LIST, _FIT_FILE_SIZES = _init_fit_file_db(_FIT_FILE_PATHS)
+    _FIT_FILE_LIST_FILTERED = [
+        fname for fname, fs in zip(_FIT_FILE_LIST, _FIT_FILE_SIZES)
+        if fs > _EMPTY_FIT_SIZE
+    ]
+    _CUR_FIT_FILES = _FIT_FILE_LIST_FILTERED
 
     # Build the dashboard layout
     _init_layout(dash_app)
@@ -82,116 +81,36 @@ def _init_layout(dash_app):
     """
     Build our HTML layout on the fly using `dash_html_components`.
     """
-    # Dataset selector: This row of cards floats atop the graph
-    control_cards = [
-        dbc.Card(
-            [
-                dbc.FormGroup(
-                    [
-                        dbc.Label("Specify Zwift Activity Folder"),
-                        dbc.RadioItems(
-                            options=[
-                                {"label": "Auto-select", "value": "Auto"},
-                                {"label": "Custom", "value": "Other"},
-                            ],
-                            value="Auto",
-                            id="radio_fit_loc",
-                        ),
-                        dbc.Input(
-                            id="radio_fit_loc_custom_text",
-                            placeholder="Enter custom path",
-                            type="text"
-                        ),
-                    ]
-                ),
-                # Used to indicate no files found at selected location
-                html.Div(id="radio_fit_loc_feedback"),
-            ],
-            body=True,
-            color="light",
-        ),
-        html.Div(
-            [
-                dbc.Card(
-                    [
-                        dbc.FormGroup(
-                            [
-                                dbc.Label("Select Dataset"),
-                                dcc.Dropdown(
-                                    id="dropdown_dataset",
-                                    options=[{"label": os.path.basename(fname), "value": fname}
-                                             for fname in _CACHE.get("data")["FIT_FILES"]],
-                                    placeholder=os.path.basename(_CACHE.get("data")["FIT_FILES"][-1]) if _CACHE.get("data")["FIT_FILES"] else "",
-                                    value=_CACHE.get("data")["FIT_FILES"][-1] if _CACHE.get("data")["FIT_FILES"] else None,
-                                ),
-                            ]
-                        ),
-                        html.Div(id="dropdown_dataset_feedback"),
-                    ],
-                    body=True,
-                    color="light",
-                ),
-                html.Br(),
-                dbc.Card(
-                    [
-                        dbc.FormGroup(
-                            [
-                                dbc.Label("Toggle which data to show"),
-                                dbc.Checklist(
-                                    options=[
-                                        {"label": "Power", "value": "power"},
-                                        {"label": "Speed", "value": "speed_kmh"},
-                                        {"label": "Cadence", "value": "cadence"},
-                                        {"label": "Altitude", "value": "altitude_norm"},
-                                    ],
-                                    value=_CACHE.get("ynames"),
-                                    id="switches_graph",
-                                    switch=True,
-                                    inline=True,
-                                ),
-                            ]
-                        ),
-                        html.Div(id="switches_graph_feedback"),
-                    ],
-                    body=True,
-                    color="light",
-                ),
-            ]
-        )
-    ]
-
-    # Main graph showing the loaded FIT file, centered below card row.
-    # The divs are switched on/off via the style element. Instead of the graph,
-    # an alert box is displayed when the fit file is faulty and vice-versa
-    graph = html.Div(
-        [
-            html.Div(
-                [
-                    # html.Img(id="graph", src=""),
-                    dcc.Graph(figure=go.Figure(), id="graph")
-                ],
-                id="div_graph_graph",
-                style={"display": "block"}
-            ),
-            html.Div(
-                [
-                    dbc.Alert("", id="graph_alert", color="danger"),
-                ],
-                id="div_graph_alert",
-                style={"display": "none"}
-            ),
-        ],
-        id="div_graph"
-    )
+    card_path_selector = get_ui_card_form_group_select_folder(
+        "group_select_folder_")
+    card_fit_file_selector = get_ui_card_form_group_select_fit_file(
+        "fit_file_selector_", _CUR_FIT_FILES)
+    card_graph_dataset_selector_ = get_ui_card_form_group_graph_data_selector(
+        "graph_dataset_selector_")
+    card_graph_main = get_ui_graph_main("graph_main_")
 
     dash_app.layout = dbc.Container(
         [
             html.H2("Viewer Board for FIT Data", style={"margin-top": 5}),
-            html.Hr(),
-            # dbc.Row([dbc.Col(card) for card in cards]),
-            dbc.Row([dbc.Col(cntrl_card) for cntrl_card in control_cards]),
-            html.Br(),
-            dbc.Row([graph]),
+            dbc.Row(
+                [
+                    dbc.Col(card_path_selector),
+                    dbc.Col(card_fit_file_selector),
+                ],
+                style={"margin-top": "10px"}
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(card_graph_dataset_selector_),
+                ],
+                style={"margin-top": "10px"}
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(card_graph_main),
+                ],
+                style={"margin-top": "10px"}
+            ),
         ],
         fluid=False,
     )
@@ -201,49 +120,46 @@ def _init_callbacks(dash_app):
     """
     Init our dashboard callbacks, this defines the board's functionality.
     """
-    # Plot y value selector callback
-    # Update plot based on selected y values
-    # @dash_app.callback(
-    #     [Output("graph", "fig")],
-    #     [Input("switches_graph", "value")])
-    # def cb_switch_ynames(switch_vals):
-    #     print("In cb_switch_ynames")
-    #     if not switch_vals:
-    #         fig = go.Figure()  # Empty figure if nothing selected
-    #     else:
-    #         fig = _make_figure(
-    #             _CACHE.get("values"), _CACHE.get("units"), switch_vals)
-    #     return fig
-    # WHY DOES THIS CALLBACK BLOCK EVERYTHING IF FIG OUTPUT IS ADDED???
+    # Callback for all main graph controls.
+    # Note: You can only have one callback output for each element globally, so
+    # all functionality altering the graph must be in this callback here.
+    # Note: The relayout data input has the drawback, that the interactive
+    # scaling on the y axis is now not working anymore, don't really know why.
     @dash_app.callback(
-        [Output("switches_graph_feedback", "children"),
-         ],
-        [Input("switches_graph", "value")])
-    def cb_switch_ynames(switch_vals):
-        print("In cb_switch_ynames")
-        fig = _make_figure(
-            _CACHE.get("values"), _CACHE.get("units"), switch_vals)
-        return (", ".join(switch_vals),)  # , go.Figure()
-
-    # Fit file dropdown callback:
-    # Print selected set in `dropdown_dataset_feedback` and update plot
-    @dash_app.callback(
-        [Output("dropdown_dataset_feedback", "children"),
-         Output("graph", "figure"),
-         Output("graph_alert", "children"),
-         Output("div_graph_graph", "style"),
-         Output("div_graph_alert", "style")],
-        [Input("dropdown_dataset", "value")])
-    def cb_dropdown_dataset(dropdown_val):
+        [Output("fit_file_selector_div", "children"),
+         Output("graph_main_graph", "figure"),
+         Output("graph_main_alert", "children"),
+         Output("graph_main_div_graph", "style"),
+         Output("graph_main_div_alert", "style"),
+         Output("graph_dataset_selector_div", "children")],
+        [Input("fit_file_selector_dropdown", "value"),
+         Input("graph_dataset_selector_checklist", "value"),
+         Input("graph_dataset_selector_checklist_mean", "value"),
+         Input("graph_main_graph", "relayoutData")])
+    def cb_fig_control(dropdown_val, ynames, plot_means, clickdata):
         # Read the date from selected file, make figure, convert to base64 and
         # feed into html.img tag. If err, display the error instead
         print("In cb_dropdown_dataset")
+        print("  - dopdown val is: {}".format(dropdown_val))
+        print("  - switch vals are: {}".format(ynames))
         ga_text = ""
         dg_style = {"display": "block"}
         dga_style = {"display": "none"}
         try:
-            values, units = _load_fit_file(dropdown_val)
-            fig = _make_figure(values, units, _CACHE.get("ynames"))
+            global _CUR_VALUES, _CUR_UNITS
+            _CUR_VALUES, _CUR_UNITS = _load_fit_file(dropdown_val)
+            plot_means = True if plot_means else False  # List to bool convers.
+            try:
+                xrnge = [
+                    clickdata["xaxis.range[0]"],
+                    clickdata["xaxis.range[1]"],
+                ]
+            except KeyError:
+                xrnge = [None, None]
+            print("xrnge : ", xrnge)
+            fig = _make_figure(
+                _CUR_VALUES, _CUR_UNITS,
+                ynames=ynames, xrnge=xrnge, plot_means=plot_means)
         except IOError as err:
             fig = go.Figure()  # Dummy, will be hidden anyway
             ga_text = str(err)
@@ -254,44 +170,35 @@ def _init_callbacks(dash_app):
         # The feedback message under the dropdown
         msg = ("Selected '{}'".format(dropdown_val)
                if dropdown_val is not None else "No dataset selected",)
-        return msg, fig, ga_text, dg_style, dga_style
+        return msg, fig, ga_text, dg_style, dga_style, (", ".join(ynames),)
 
-    # Zwift activity folder radio select callback:
-    # Search for new files if new selection is done
     @dash_app.callback(
-        [Output("radio_fit_loc_feedback", "children"),
-         Output("dropdown_dataset", "options"),
-         Output("dropdown_dataset", "placeholder"),
-         Output("dropdown_dataset", "value")],
-        [Input("radio_fit_loc", "value"),
-         Input("radio_fit_loc_custom_text", "value")])
-    def cb_radio_fit_loc(radio_val, text_val):
-        print("In cb_radio_fit_loc")
-        data = _CACHE.get("data")
-
-        # Search for files at selected location
-        text_val = "" if text_val is None else text_val
-        if radio_val in _FIT_FILE_PATHS:
-            text_val = _FIT_FILE_PATHS[radio_val]
-        files = _init_fit_file_db(text_val)
-        # Store new selection in cache
-        data["FIT_FILE_LOC"] = [radio_val, text_val]
-        data["FIT_FILES"] = files
-        _CACHE.set("data", data)
+        [Output("fit_file_selector_dropdown", "options"),
+         Output("fit_file_selector_dropdown", "placeholder"),
+         Output("fit_file_selector_dropdown", "value"),
+         Output("fit_file_selector_label", "children")],
+        [Input("fit_file_selector_checklist", "value")]
+    )
+    def cb_dropdown_switches_ignore(switch_val):
+        print("In cb_dropdown_switches_ignore")
+        print("  - switch_val is: {}".format(switch_val))
+        global _CUR_FIT_FILES
+        if switch_val:  # This is actually a check on len(list) > 0
+            _CUR_FIT_FILES = _FIT_FILE_LIST_FILTERED
+            msg = "Select Dataset (non-empty)"
+        else:
+            _CUR_FIT_FILES = _FIT_FILE_LIST
+            msg = "Select Dataset (all)"
 
         # Update fit file selector dropwdown
         opts = [{"label": os.path.basename(fname), "value": fname}
-                for fname in data["FIT_FILES"]]
+                for fname in _CUR_FIT_FILES]
         placeholder = os.path.basename(
-            data["FIT_FILES"][-1]) if data["FIT_FILES"] else ""
-        dropwdown_val = data["FIT_FILES"][-1] if data["FIT_FILES"] else None
-
-        if not os.path.isdir(data["FIT_FILE_LOC"][1]):
-            msg = "Path '{}' not valid".format(data["FIT_FILE_LOC"][1])
-        else:
-            msg = "{} FIT files found at '{}'".format(
-                len(data["FIT_FILES"]), data["FIT_FILE_LOC"][1])
-        return msg, opts, placeholder, dropwdown_val
+            _CUR_FIT_FILES[-1]) if _CUR_FIT_FILES else ""
+        value = _CUR_FIT_FILES[-1] if _CUR_FIT_FILES else None
+        print("  - placeholder is set to {}".format(placeholder))
+        print("  - value is set to {}".format(value))
+        return opts, placeholder, value, msg
 
 
 def _init_fit_file_db(fit_db_path):
@@ -312,7 +219,8 @@ def _init_fit_file_db(fit_db_path):
     fit_files = sorted(glob(os.path.join(fit_db_path, "*.fit")))
     fit_files = [f for f in fit_files
                  if not os.path.basename(f).startswith("inProgress")]
-    return fit_files
+    file_sizes = [os.path.getsize(f) for f in fit_files]
+    return fit_files, file_sizes
 
 
 def _load_fit_file(fname):
@@ -405,60 +313,123 @@ def _load_fit_file(fname):
             d * (180. / 2**31) for d in values["position_lat"]]
         units["pos_lat_deg"] = "degree"
 
-    _CACHE.set("values", values)
-    _CACHE.set("units", units)
-
     return values, units
 
 
-def _make_figure(values, units, ynames=["power"]):
+def _make_figure(values, units, ynames=["power"],
+                 xrnge=[None, None], plot_means=True):
     fig = go.Figure()
 
     print("In _make_figure")
+    print("ynames", ynames)
+    print("xrnge", xrnge)
+    print("plot_means", plot_means)
 
     if values:
-        print(len(values))
-        print(ynames)
-        ax_colors = ["#1f77b4", "#ff7f0e", "#d62728", "#9467bd"]
+        ax_colors = {
+            "power": "#353132",
+            "speed_kmh": "#2ca02c",
+            "cadence": "#1f77b4",
+            "altitude_norm": "#7f7f7f",
+            "heart_rate": "#2ca02c",
+            }
         # Time in minutes
         times = np.array(values["time_norm"]) / 60.
+
+        # Slice it?
+        idx0, idx1 = 0, -1
+        if xrnge[0] is not None:
+            idx0 = np.where(times > xrnge[0])[0][0]
+        if xrnge[1] is not None:
+            idx1 = np.where(times < xrnge[1])[0][-1]
+        times = times[idx0:idx1]
+
         # We need to make room for all the potential extra axes
         _offset = 0.1
+        _offsets = [1. - j * _offset for j in range(len(ynames) - 2, 0, -1)]
         domain_cuts = max(0, (len(ynames) - 1) * _offset)
 
         # Plot each name's data set
+        _title = []
         yaxes_props = {}
         for i, name in enumerate(ynames):
             # First value is drawn to the left main axis, all others are getting
             # a new axis on the right. The names are tight implicitely by plotly
-            _ax = "y" if i == 0 else "y{}".format(i)
-            print(_ax)
-            print(values[name][:10])
+            _ax_id = "y" if i == 0 else "y{}".format(i + 1)
+            _ax_name = "yaxis" if i == 0 else "yaxis{}".format(i + 1)
+
+            print("Plot {} on axis {} ({}, {})".format(name, i, _ax_id, _ax_name))
             fig.add_trace(go.Scatter(
-                x=times, y=values[name], yaxis=_ax,
-                name="{} in {}".format(name, units[name])))
+                x=times, y=values[name][idx0:idx1], yaxis=_ax_id,
+                name=name,
+                line={"color": ax_colors[name]}, showlegend=False,
+                mode="lines",
+            ))
+
+            if plot_means:
+                _mean = np.mean(values[name][idx0:idx1])
+                fig.add_trace(go.Scatter(
+                    x=[times[0], times[-1]], y=2 * [_mean],
+                    yaxis=_ax_id, name=name,
+                    line={"color": ax_colors[name], "dash": "dash"},
+                    mode="lines",
+                    showlegend=False,
+                ))
+                _title.append("{}={:.1f}".format(name, _mean))
+
+            yaxes_props[_ax_name] = {
+                "titlefont": {"color": ax_colors[name]},
+                "tickfont": {"color": ax_colors[name]},
+            }
 
             if i > 0:
-                _n = "yaxis{}".format(i)
-                yaxes_props[_n] = {
-                    "titlefont": {"color": ax_colors[i - 1]},
-                    "tickfont": {"color": ax_colors[i - 1]},
-                    "overlaying": "y",
-                    "side": "right",
-                }
+                yaxes_props[_ax_name]["overlaying"] = "y"
+                yaxes_props[_ax_name]["side"] = "right"
+                yaxes_props[_ax_name]["showgrid"] = False
                 if i == 1:
-                    yaxes_props[_n]["anchor"] = "x"
+                    yaxes_props[_ax_name]["anchor"] = "x"
                 else:
-                    yaxes_props[_n]["anchor"] = "free"
-                    yaxes_props[_n]["position"] = 1. - (i - 1) * _offset
+                    yaxes_props[_ax_name]["anchor"] = "free"
+                    yaxes_props[_ax_name]["position"] = _offsets[i - 2]
+            yaxes_props[_ax_name]["title"] = "{} in {}".format(
+                name, units[name])
 
         # Create axis objects
-        print([0, 1 - domain_cuts])
+        print("Domain cut: ", [0, 1 - domain_cuts])
         print(yaxes_props)
-        fig.update_layout(xaxis={"domain": [0, 1 - domain_cuts]}, **yaxes_props)
+        fig.update_layout(
+            xaxis={"domain": [0, 1 - domain_cuts]}, **yaxes_props,
+            xaxis_range=xrnge,
+            width=1000 * 1. / (1 - domain_cuts),
+            title={"text": "Mean values: " + ", ".join(_title)} if _title else None
+        )
     else:
         # Empty figure with text that no data is there
         fig.add_annotation(
-            x=0, y=0, text="No data in FIT file", showarrow=False)
+            x=0, y=0, text="No data to plot", showarrow=False)
 
     return fig
+
+
+if __name__ == "__main__":
+    dash_app = dash.Dash(
+        external_stylesheets=[dbc.themes.MINTY],
+    )
+
+    # Just use a global variable here, only OK for one single user
+    _FIT_FILE_LIST, _FIT_FILE_SIZES = _init_fit_file_db(_FIT_FILE_PATHS)
+    _FIT_FILE_LIST_FILTERED = [
+        fname for fname, fs in zip(_FIT_FILE_LIST, _FIT_FILE_SIZES)
+        if fs > _EMPTY_FIT_SIZE
+    ]
+    _CUR_FIT_FILES = _FIT_FILE_LIST_FILTERED
+
+    # Build the dashboard layout
+    _init_layout(dash_app)
+
+    # Init callbacks on Flask app load, not globally before it is running
+    _init_callbacks(dash_app)
+
+    print("Dash app created")
+
+    dash_app.run_server(debug=True)

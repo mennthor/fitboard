@@ -7,6 +7,7 @@ See: https://flask.palletsprojects.com/en/1.1.x/patterns/appfactories/
 
 from flask import Flask
 
+
 __version__ = '0.1.0'
 
 
