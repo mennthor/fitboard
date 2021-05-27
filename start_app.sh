@@ -6,4 +6,6 @@ set -e
 
 export FLASK_APP=fitboard:init_app
 export FLASK_ENV=development
+export FLASK_DEBUG=1
+export DASH_DEBUG=1
 poetry run flask run
