@@ -15,8 +15,8 @@ def get_ui_card_form_group_select_folder(id_pref):
     Return a `dash_bootstrap_components.Card` with a `dash_bootstrap_components`
     form group including radio items and text input and outside the form group a
     `dash_html_components.Div` for text output.
-    These can be accessed using the created ids 'radio_items', 'input', 'div',
-    each prepended with `id_pref`.
+    These can be accessed using the created ids 'radio_items', 'input',
+    'div_alert', each prepended with `id_pref`.
     """
     return dbc.Card(
         [
@@ -38,8 +38,14 @@ def get_ui_card_form_group_select_folder(id_pref):
                     ),
                 ]
             ),
-            # Used to indicate no files found at selected location
-            html.Div(id=id_pref + "div"),
+            # Hidden, except users enter invalid path, then it show with err msg
+            html.Div(
+                [
+                    dbc.Alert("", id=id_pref + "alert", color="danger"),
+                ],
+                id=id_pref + "div_alert",
+                style={"display": "none"}
+            ),
         ],
         body=True,
         color="light",

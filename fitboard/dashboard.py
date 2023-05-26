@@ -16,26 +16,28 @@ import dash_bootstrap_components as dbc
 import dash_html_components as html
 import plotly.graph_objects as go
 
+# Use this for debug mode in this folder via poetry run python dashboard.py
+# from ui_elements import (
+#     get_ui_card_form_group_select_folder,
+#     get_ui_card_form_group_select_fit_file,
+#     get_ui_graph_main,
+#     get_ui_card_form_group_graph_data_selector
+#     )
 from .ui_elements import (
     get_ui_card_form_group_select_folder,
     get_ui_card_form_group_select_fit_file,
     get_ui_graph_main,
     get_ui_card_form_group_graph_data_selector
     )
-# from .ui_elements import (
-#     get_ui_card_form_group_select_folder,
-#     get_ui_card_form_group_select_fit_file,
-#     get_ui_graph_main,
-#     get_ui_card_form_group_graph_data_selector
-#     )
 
 import fitdecode
 
 
 # These needs to be replaced with a proper multiuser cache if used for more
-# than one user locally
-_FIT_FILE_PATHS = os.path.expanduser(
+# than one user locally.
+_DFLT_FIT_FILE_PATH = os.path.expanduser(
         os.path.join("~", "Documents", "Zwift", "Activities"))
+# THese are used as globals, OK for a single app user
 _FIT_FILE_LIST = []
 _FIT_FILE_LIST_FILTERED = []
 _FIT_FILE_SIZES = []
@@ -56,15 +58,8 @@ def init_dashboard(server):
         external_stylesheets=[dbc.themes.MINTY],
     )
 
-    # Just use a global variable here, only OK for one single user
-    global _FIT_FILE_LIST, _FIT_FILE_SIZES
-    global _FIT_FILE_LIST_FILTERED, _CUR_FIT_FILES
-    _FIT_FILE_LIST, _FIT_FILE_SIZES = _init_fit_file_db(_FIT_FILE_PATHS)
-    _FIT_FILE_LIST_FILTERED = [
-        fname for fname, fs in zip(_FIT_FILE_LIST, _FIT_FILE_SIZES)
-        if fs > _EMPTY_FIT_SIZE
-    ]
-    _CUR_FIT_FILES = _FIT_FILE_LIST_FILTERED
+    # Get initial list of FIT files from default location
+    _init_fit_file_db(_DFLT_FIT_FILE_PATH)
 
     # Build the dashboard layout
     _init_layout(dash_app)
@@ -137,8 +132,8 @@ def _init_callbacks(dash_app):
          Input("graph_dataset_selector_checklist_mean", "value"),
          Input("graph_main_graph", "relayoutData")])
     def cb_fig_control(dropdown_val, ynames, plot_means, clickdata):
-        # Read the date from selected file, make figure, convert to base64 and
-        # feed into html.img tag. If err, display the error instead
+        # Read data from selected file, make figure.
+        # If err, display the error instead
         print("In cb_dropdown_dataset")
         print("  - dopdown val is: {}".format(dropdown_val))
         print("  - switch vals are: {}".format(ynames))
@@ -154,7 +149,7 @@ def _init_callbacks(dash_app):
                     clickdata["xaxis.range[0]"],
                     clickdata["xaxis.range[1]"],
                 ]
-            except KeyError:
+            except (KeyError, TypeError):
                 xrnge = [None, None]
             print("xrnge : ", xrnge)
             fig = _make_figure(
@@ -176,13 +171,39 @@ def _init_callbacks(dash_app):
         [Output("fit_file_selector_dropdown", "options"),
          Output("fit_file_selector_dropdown", "placeholder"),
          Output("fit_file_selector_dropdown", "value"),
-         Output("fit_file_selector_label", "children")],
-        [Input("fit_file_selector_checklist", "value")]
-    )
-    def cb_dropdown_switches_ignore(switch_val):
-        print("In cb_dropdown_switches_ignore")
+         Output("fit_file_selector_label", "children"),
+         Output("group_select_folder_div_alert", "style"),
+         Output("group_select_folder_alert", "children")],
+        [Input("group_select_folder_radio_items", "value"),
+         Input("group_select_folder_input", "value"),
+         Input("fit_file_selector_checklist", "value")])
+    def cb_fit_file_selection(radio_val, custom_file_path, switch_val):
+        print("In cb_fit_file_selection")
+        print("  - radio_val is: {}".format(radio_val))
+        print("  - custom_file_path is: {}".format(custom_file_path))
         print("  - switch_val is: {}".format(switch_val))
-        global _CUR_FIT_FILES
+        # Update database if necessary
+        global _DFLT_FIT_FILE_PATH, _CUR_FIT_FILES
+        global _FIT_FILE_LIST_FILTERED, _CUR_FIT_FILES
+        alert_style = {"display": "none"}
+        alert_msg = ""
+
+        if radio_val == "Auto":
+            _init_fit_file_db(_DFLT_FIT_FILE_PATH)
+            print("Using default FIT file path {}".format(_DFLT_FIT_FILE_PATH))
+        else:
+            if custom_file_path is None or not os.path.isdir(custom_file_path):
+                # 'Display' error by unhiding the alert box
+                alert_style = {"display": "block", "margin": "auto"}
+                if custom_file_path is None:
+                    alert_msg = "Please enter a valid folder path"
+                else:
+                    alert_msg = "{} is not a valid folder".format(
+                        custom_file_path)
+            _init_fit_file_db(custom_file_path)
+            print("Using custom FIT file path {}".format(custom_file_path))
+
+        # Update list of fit files if necessary
         if switch_val:  # This is actually a check on len(list) > 0
             _CUR_FIT_FILES = _FIT_FILE_LIST_FILTERED
             msg = "Select Dataset (non-empty)"
@@ -198,7 +219,7 @@ def _init_callbacks(dash_app):
         value = _CUR_FIT_FILES[-1] if _CUR_FIT_FILES else None
         print("  - placeholder is set to {}".format(placeholder))
         print("  - value is set to {}".format(value))
-        return opts, placeholder, value, msg
+        return opts, placeholder, value, msg, alert_style, alert_msg
 
 
 def _init_fit_file_db(fit_db_path):
@@ -209,18 +230,27 @@ def _init_fit_file_db(fit_db_path):
     ----------
     fit_db_path : str
         Fully resolved name where the `*.fit` files can be found.
-
-    Returns
-    -------
-    fit_files : list
-        Sorted list of all found `*.fit` files in the given folder.
     """
+    global _FIT_FILE_LIST, _FIT_FILE_SIZES
+    global _FIT_FILE_LIST_FILTERED, _CUR_FIT_FILES
+
+    _FIT_FILE_LIST, _FIT_FILE_LIST_FILTERED, _CUR_FIT_FILES = [], [], []
     print("In _init_file_db")
-    fit_files = sorted(glob(os.path.join(fit_db_path, "*.fit")))
-    fit_files = [f for f in fit_files
-                 if not os.path.basename(f).startswith("inProgress")]
-    file_sizes = [os.path.getsize(f) for f in fit_files]
-    return fit_files, file_sizes
+    if fit_db_path is None:
+        print("No FIT DB path given")
+    else:
+        print("Looking for FIT files at {}".format(fit_db_path))
+        fit_files = sorted(glob(os.path.join(fit_db_path, "*.fit")))
+        _FIT_FILE_LIST = [f for f in fit_files
+                          if not os.path.basename(f).startswith("inProgress")]
+        _FIT_FILE_SIZES = [os.path.getsize(f) for f in fit_files]
+        # Set filtered list to have non empty default
+        _CUR_FIT_FILES = _FIT_FILE_LIST_FILTERED = [
+            fname for fname, fs in zip(_FIT_FILE_LIST, _FIT_FILE_SIZES)
+            if fs > _EMPTY_FIT_SIZE
+        ]
+    print("Found {} FIT files".format(len(_FIT_FILE_LIST)))
+    print("Found {} non-empty FIT files".format(len(_CUR_FIT_FILES)))
 
 
 def _load_fit_file(fname):
@@ -244,7 +274,10 @@ def _load_fit_file(fname):
     """
     print("In _load_fit_file")
     print(fname)
-    values, units = {}, {}
+    values, units, sets_of_names = {}, {}, {}
+    if fname is None:
+        return values, units
+
     try:
         with fitdecode.FitReader(fname) as fit:
             # The yielded frame object is of one of the following types:
@@ -252,18 +285,43 @@ def _load_fit_file(fname):
             # * fitdecode.FitDefinitionMessage
             # * fitdecode.FitDataMessage
             # * fitdecode.FitCRC
-            # We want the data frames
+            # Make a first pass checking the longest set of attributes over all
+            # records. Then use only those frames with all of the attrs in a
+            # second run to have consistent array data.
             for frame in fit:
+                # We only want the data frames
                 if not isinstance(frame, fitdecode.FitDataMessage):
                     continue
 
                 # The record frames contain the wanted data columns
+                if frame.name == "record":
+                    _values = [f.value for f in frame.fields]
+                    _names = [f.name for i, f in enumerate(frame.fields)
+                              if _values[i] is not None]
+                    key = frozenset(_names)
+                    if key not in sets_of_names:
+                        sets_of_names[key] = 0
+                    sets_of_names[key] += 1
+
+        most_common_set_of_names = max(sets_of_names, key=sets_of_names.get)
+        print("FIT file most common set of data field names: {}".format(
+            ", ".join(sorted(most_common_set_of_names))))
+
+        with fitdecode.FitReader(fname) as fit:
+            for frame in fit:
+                if not isinstance(frame, fitdecode.FitDataMessage):
+                    continue
+
                 if frame.name == "record":
                     # Append data to collection.
                     # Note: Some seem to be doubled but None? Ignore them
                     _values = [f.value for f in frame.fields]
                     _names = [f.name for i, f in enumerate(frame.fields)
                               if _values[i] is not None]
+                    if frozenset(_names) != most_common_set_of_names:
+                        print("Ignoring frame with names {}".format(
+                            ", ".join(sorted(_names))))
+                        continue  # Ignore incompatible frames
                     _units = [f.units for i, f in enumerate(frame.fields)
                               if _values[i] is not None]
                     _values = [
@@ -281,7 +339,8 @@ def _load_fit_file(fname):
                         print(_units)
                         raise ValueError("Inconsistent columns in FIT records.")
                     # Store
-                    [values[n].append(v) for n, v in zip(_names, _values)]
+                    for n, v in zip(_names, _values):
+                        values[n].append(v)
                 elif frame.name == "session":
                     # This contains ride summaries and potentially integer
                     # encoded course and world name. Currently not used
@@ -398,7 +457,8 @@ def _make_figure(values, units, ynames=["power"],
         print("Domain cut: ", [0, 1 - domain_cuts])
         print(yaxes_props)
         fig.update_layout(
-            xaxis={"domain": [0, 1 - domain_cuts]}, **yaxes_props,
+            xaxis={"title": "Time in s", "domain": [0, 1 - domain_cuts]},
+            **yaxes_props,
             xaxis_range=xrnge,
             width=1000 * 1. / (1 - domain_cuts),
             title={"text": "Mean values: " + ", ".join(_title)} if _title else None
@@ -416,18 +476,8 @@ if __name__ == "__main__":
         external_stylesheets=[dbc.themes.MINTY],
     )
 
-    # Just use a global variable here, only OK for one single user
-    _FIT_FILE_LIST, _FIT_FILE_SIZES = _init_fit_file_db(_FIT_FILE_PATHS)
-    _FIT_FILE_LIST_FILTERED = [
-        fname for fname, fs in zip(_FIT_FILE_LIST, _FIT_FILE_SIZES)
-        if fs > _EMPTY_FIT_SIZE
-    ]
-    _CUR_FIT_FILES = _FIT_FILE_LIST_FILTERED
-
-    # Build the dashboard layout
+    _init_fit_file_db(_DFLT_FIT_FILE_PATH)
     _init_layout(dash_app)
-
-    # Init callbacks on Flask app load, not globally before it is running
     _init_callbacks(dash_app)
 
     print("Dash app created")
