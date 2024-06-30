@@ -13,7 +13,7 @@ import numpy as np
 import dash
 from dash.dependencies import Input, Output
 import dash_bootstrap_components as dbc
-import dash_html_components as html
+from dash import html
 import plotly.graph_objects as go
 
 # Use this for debug mode in this folder via poetry run python dashboard.py

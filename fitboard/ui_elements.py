@@ -5,8 +5,8 @@ Outsourced UI element blobs.
 import os
 
 import dash_bootstrap_components as dbc
-import dash_core_components as dcc
-import dash_html_components as html
+from dash import dcc
+from dash import html
 import plotly.graph_objects as go
 
 
@@ -20,23 +20,19 @@ def get_ui_card_form_group_select_folder(id_pref):
     """
     return dbc.Card(
         [
-            dbc.FormGroup(
-                [
-                    dbc.Label("Specify Zwift Activity Folder"),
-                    dbc.RadioItems(
-                        options=[
-                            {"label": "Auto-select", "value": "Auto"},
-                            {"label": "Custom", "value": "Other"},
-                        ],
-                        value="Auto",
-                        id=id_pref + "radio_items",
-                    ),
-                    dbc.Input(
-                        id=id_pref + "input",
-                        placeholder="Enter custom path",
-                        type="text"
-                    ),
-                ]
+            dbc.Label("Specify Zwift Activity Folder"),
+            dbc.RadioItems(
+                options=[
+                    {"label": "Auto-select", "value": "Auto"},
+                    {"label": "Custom", "value": "Other"},
+                ],
+                value="Auto",
+                id=id_pref + "radio_items",
+            ),
+            dbc.Input(
+                id=id_pref + "input",
+                placeholder="Enter custom path",
+                type="text"
             ),
             # Hidden, except users enter invalid path, then it show with err msg
             html.Div(
@@ -64,27 +60,23 @@ def get_ui_card_form_group_select_fit_file(id_pref, fit_files):
     """
     return dbc.Card(
         [
-            dbc.FormGroup(
-                [
-                    dbc.Label("Select Dataset", id=id_pref + "label"),
-                    dcc.Dropdown(
-                        id=id_pref + "dropdown",
-                        options=[{"label": os.path.basename(fname), "value": fname}
-                                 for fname in fit_files],
-                        placeholder=os.path.basename(fit_files[-1]) if fit_files else "",
-                        value=fit_files[-1] if fit_files else None,
-                    ),
-                    html.Br(),
-                    dbc.Checklist(
-                        options=[
-                            {"label": "Ignore empty files", "value": "true"},
-                        ],
-                        value=["true"],
-                        id=id_pref + "checklist",
-                        switch=True,
-                        inline=True,
-                    ),
-                ]
+            dbc.Label("Select Dataset", id=id_pref + "label"),
+            dcc.Dropdown(
+                id=id_pref + "dropdown",
+                options=[{"label": os.path.basename(fname), "value": fname}
+                         for fname in fit_files],
+                placeholder=os.path.basename(fit_files[-1]) if fit_files else "",
+                value=fit_files[-1] if fit_files else None,
+            ),
+            html.Br(),
+            dbc.Checklist(
+                options=[
+                    {"label": "Ignore empty files", "value": "true"},
+                ],
+                value=["true"],
+                id=id_pref + "checklist",
+                switch=True,
+                inline=True,
             ),
             html.Div(id=id_pref + "div"),
         ],
@@ -103,32 +95,28 @@ def get_ui_card_form_group_graph_data_selector(id_pref):
     """
     return dbc.Card(
         [
-            dbc.FormGroup(
-                [
-                    dbc.Label("Toggle which data to show"),
-                    dbc.Checklist(
-                        options=[
-                            {"label": "Power", "value": "power"},
-                            {"label": "Speed", "value": "speed_kmh"},
-                            {"label": "Cadence", "value": "cadence"},
-                            {"label": "Altitude", "value": "altitude_norm"},
-                            {"label": "Heart Rate", "value": "heart_rate"},
-                        ],
-                        value=["power"],
-                        id=id_pref + "checklist",
-                        switch=True,
-                        inline=True,
-                    ),
-                    dbc.Checklist(
-                        options=[
-                            {"label": "Show mean value in selected range", "value": "true"},
-                        ],
-                        value=["true"],
-                        id=id_pref + "checklist_mean",
-                        switch=True,
-                        inline=True,
-                    ),
-                ]
+            dbc.Label("Toggle which data to show"),
+            dbc.Checklist(
+                options=[
+                    {"label": "Power", "value": "power"},
+                    {"label": "Speed", "value": "speed_kmh"},
+                    {"label": "Cadence", "value": "cadence"},
+                    {"label": "Altitude", "value": "altitude_norm"},
+                    {"label": "Heart Rate", "value": "heart_rate"},
+                ],
+                value=["power"],
+                id=id_pref + "checklist",
+                switch=True,
+                inline=True,
+            ),
+            dbc.Checklist(
+                options=[
+                    {"label": "Show mean value in selected range", "value": "true"},
+                ],
+                value=["true"],
+                id=id_pref + "checklist_mean",
+                switch=True,
+                inline=True,
             ),
             html.Div(id=id_pref + "div"),
         ],
